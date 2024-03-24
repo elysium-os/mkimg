@@ -1,0 +1,19 @@
+name = "test.img"
+protective-mbr = true
+bootsector = "x"
+
+# Partition with raw data from a file
+[[partitions]]
+type = "file"
+name = "filepart"
+gpt-type = "54524154-5241-5355-424F-4F5450415254"
+file = "x"
+
+# Partition with a FAT32 filesystem on it, along with a root directory copied over + a file
+[[partitions]]
+type = "fs"
+name = "fatfs"
+gpt-type = "454C5953-4955-4D52-4F4F-545041525458"
+fs-type = "fat32"
+size = 128
+files = ["root", "x.txt"]
