@@ -25,6 +25,7 @@ type Partition struct {
 	name    string
 	size    uint64
 	gptType string
+	gptUUID string
 
 	file string
 
@@ -43,6 +44,11 @@ func cfgParsePartition(index int, partition *toml.Tree) Partition {
 	}
 	cfgGptType := partition.Get("gpt-type").(string)
 
+	var cfgGptUUID string = ""
+	if partition.Has("gpt-uuid") {
+		cfgGptUUID = partition.Get("gpt-uuid").(string)
+	}
+
 	var cfgName string = ""
 	if partition.Has("name") {
 		cfgName = partition.Get("name").(string)
@@ -51,6 +57,7 @@ func cfgParsePartition(index int, partition *toml.Tree) Partition {
 	commonPart := Partition{
 		name:    cfgName,
 		gptType: cfgGptType,
+		gptUUID: cfgGptUUID,
 	}
 
 	switch cfgType {
@@ -162,13 +169,17 @@ func main() {
 	gptPartitions := make([]*gpt.Partition, 0)
 	for i, partition := range partitions {
 		sizeInSectors := uint64((int64(partition.size) + img.LogicalBlocksize - 1) / img.LogicalBlocksize)
-		gptPartitions = append(gptPartitions, &gpt.Partition{
+		gptPartition := gpt.Partition{
 			Start: currentSector,
 			End:   currentSector + sizeInSectors,
 			Type:  gpt.Type(partition.gptType),
 			Name:  partition.name,
-		})
-		fmt.Printf("> Partition %d { name: %s, type: %s, start: %d, end: %d }\n", i+1, partition.name, partition.ptype, currentSector, currentSector+sizeInSectors)
+		}
+		if partition.gptUUID != "" {
+			gptPartition.GUID = partition.gptUUID
+		}
+		gptPartitions = append(gptPartitions, &gptPartition)
+		fmt.Printf("> Partition %d { name: %s, type: %s, start: %d, end: %d, GUID: %s }\n", i+1, partition.name, partition.ptype, currentSector, currentSector+sizeInSectors, partition.gptUUID)
 		currentSector += sizeInSectors
 	}
 

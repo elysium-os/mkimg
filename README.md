@@ -28,6 +28,9 @@ name = "root"
 # Partition GPT type
 gpt-type = "01233445-1234-5432-1234-ABCDEF123456"
 
+# (Optional) Partition GPT uuid
+gpt-uuid = "01233445-1234-5432-1234-ABCDEF123456"
+
 # Partition mkimg type
 # Types: "fs", "file"
 type = "fs"
