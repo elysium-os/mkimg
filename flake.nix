@@ -1,6 +1,6 @@
 {
     inputs = {
-        nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
+        nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
         flake-utils.url = "github:numtide/flake-utils";
     };
 
@@ -10,7 +10,7 @@
             inherit (pkgs) lib mkShell buildGoModule;
         in {
             devShells.default = mkShell {
-                shellHook = "export DEVSHELL_PS1_PREFIX='mkimg'";
+                shellHook = "export NIX_SHELL_NAME='mkimg'";
                 nativeBuildInputs = with pkgs; [
                     go
                 ];
