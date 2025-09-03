@@ -179,6 +179,10 @@ func createDisk(context context.Context, cmd *cli.Command) error {
 
 	// Create disk image
 	fmt.Printf("Creating image %s\n", name)
+	if err := os.Remove(name); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove existing image: %s", err)
+	}
+
 	img, err := diskfs.Create(name, int64(size), diskfs.SectorSize512)
 	if err != nil {
 		return fmt.Errorf("failed to create the image: %s", err)
