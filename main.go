@@ -354,7 +354,7 @@ func main() {
 			&cli.StringSliceFlag{
 				Name:    "partition",
 				Aliases: []string{"p"},
-				Usage:   "partition",
+				Usage:   "create a partition in the image (see readme)",
 			},
 			&cli.StringFlag{
 				Name:    "name",
@@ -375,7 +375,7 @@ func main() {
 			},
 			&cli.StringFlag{
 				Name:     "bootsector",
-				Usage:    "path to the bootsector to use",
+				Usage:    "path to a bootsector if wanted",
 				Required: false,
 			},
 		},
