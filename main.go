@@ -1,16 +1,19 @@
 package main
 
 import (
-	"flag"
+	"context"
 	"fmt"
 	"os"
 	"path"
+	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/diskfs/go-diskfs"
 	"github.com/diskfs/go-diskfs/disk"
 	"github.com/diskfs/go-diskfs/filesystem"
 	"github.com/diskfs/go-diskfs/partition/gpt"
-	toml "github.com/pelletier/go-toml"
+	"github.com/urfave/cli/v3"
 )
 
 const MaxBootsectorSize = 440
@@ -27,145 +30,152 @@ type Partition struct {
 	gptType string
 	gptUUID string
 
+	// File Partition
 	file string
 
-	fsType filesystem.Type
-	files  []string
+	// FS Partition
+	fsType  filesystem.Type
+	fsFiles []string
+	fsRoot  string
 }
 
-func cfgParsePartition(index int, partition *toml.Tree) Partition {
-	if !partition.Has("type") {
-		panic(fmt.Errorf("partition %d: missing type", index))
-	}
-	cfgType := partition.Get("type").(string)
+// mkimg --partition=fs:name=xdd:type=fat32:size=32mb
 
-	if !partition.Has("gpt-type") {
-		panic(fmt.Errorf("partition %d: missing gpt-type guid", index))
-	}
-	cfgGptType := partition.Get("gpt-type").(string)
+func parsePartitionKV(str string) (map[string]string, error) {
+	kv := make(map[string]string, 0)
 
-	var cfgGptUUID string = ""
-	if partition.Has("gpt-uuid") {
-		cfgGptUUID = partition.Get("gpt-uuid").(string)
-	}
-
-	var cfgName string = ""
-	if partition.Has("name") {
-		cfgName = partition.Get("name").(string)
-	}
-
-	commonPart := Partition{
-		name:    cfgName,
-		gptType: cfgGptType,
-		gptUUID: cfgGptUUID,
-	}
-
-	switch cfgType {
-	case "file":
-		if !partition.Has("file") {
-			panic(fmt.Errorf("partition %d: no file", index))
+	entries := strings.SplitSeq(str, ":")
+	for entry := range entries {
+		parts := strings.Split(entry, "=")
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid keyvalue `%s` in partition `%s`", entry, str)
 		}
-		cfgFile := partition.Get("file").(string)
-		fileStat, err := os.Stat(cfgFile)
-		if err != nil {
-			if os.IsNotExist(err) {
-				panic(fmt.Errorf("partition %d: file %s does not exist", index, cfgFile))
+
+		if _, ok := kv[parts[0]]; ok {
+			return nil, fmt.Errorf("duplicate partition entry `%s` in `%s`", parts[0], str)
+		}
+
+		kv[parts[0]] = parts[1]
+	}
+
+	return kv, nil
+}
+
+func parsePartition(str string) (Partition, error) {
+	kv, err := parsePartitionKV(str)
+	if err != nil {
+		return Partition{}, err
+	}
+
+	partition := Partition{
+		name: "Unnamed Partition",
+	}
+
+	for k, v := range kv {
+		switch k {
+		case "type":
+			if !slices.Contains([]string{PartitionTypeFile, PartitionTypeFS}, v) {
+				return partition, fmt.Errorf("unknown partition type `%s` in partition `%s`", v, str)
 			}
-			panic(err)
-		}
-
-		commonPart.ptype = PartitionTypeFile
-		commonPart.size = uint64(fileStat.Size())
-		commonPart.file = cfgFile
-		return commonPart
-	case "fs":
-		if !partition.Has("size") {
-			panic(fmt.Errorf("partition %d: no size", index))
-		}
-		cfgSize := uint64(partition.Get("size").(int64)) * 1024 * 1024
-
-		if !partition.Has("fs-type") {
-			panic(fmt.Errorf("partition %d: no fs-type", index))
-		}
-		cfgFsType := partition.Get("fs-type").(string)
-
-		cfgFiles := make([]string, 0)
-		if partition.Has("files") {
-			cfgFiles = partition.GetArray("files").([]string)
-		}
-
-		switch cfgFsType {
-		case "fat32":
-			commonPart.fsType = filesystem.TypeFat32
+			partition.ptype = v
+		case "gpt-type":
+			partition.gptType = v
+		case "name":
+			partition.name = v
 		default:
-			panic(fmt.Errorf("partition %d: invalid fs-type \"%s\"", index, cfgFsType))
+			continue
 		}
-
-		commonPart.files = cfgFiles
-		commonPart.ptype = PartitionTypeFS
-		commonPart.size = cfgSize
-		return commonPart
-	default:
-		panic(fmt.Errorf("partition %d: invalid type \"%s\"", index, cfgType))
+		delete(kv, k)
 	}
+
+	if len(partition.ptype) == 0 {
+		return partition, fmt.Errorf("partition `%s` is missing a type", str)
+	}
+
+	if len(partition.gptType) == 0 {
+		return partition, fmt.Errorf("partition `%s` is missing a gpt-type", str)
+	}
+
+	switch partition.ptype {
+	case PartitionTypeFile:
+		for k, v := range kv {
+			switch k {
+			case "file":
+				partition.file = v
+
+				fileStat, err := os.Stat(v)
+				if err != nil {
+					if os.IsNotExist(err) {
+						return partition, fmt.Errorf("file `%s` does not exist (partition `%s`)", v, str)
+					}
+					panic(err)
+				}
+				partition.size = uint64(fileStat.Size())
+			default:
+				continue
+			}
+			delete(kv, k)
+		}
+	case PartitionTypeFS:
+		for k, v := range kv {
+			switch k {
+			case "fs-type":
+				switch v {
+				case "fat32":
+					partition.fsType = filesystem.TypeFat32
+				default:
+					return partition, fmt.Errorf("unknown fs-type `%s` in partition `%s`", v, str)
+				}
+			case "fs-size":
+				size, err := strconv.Atoi(v)
+				if err != nil {
+					return partition, fmt.Errorf("fs-size `%s` is not a valid number (partition `%s`)", v, str)
+				}
+				partition.size = uint64(size) * 1024 * 1024
+			case "fs-files":
+				partition.fsFiles = strings.Split(v, "#")
+			case "fs-root":
+				partition.fsRoot = v
+			default:
+				continue
+			}
+			delete(kv, k)
+		}
+	}
+
+	for k, _ := range kv {
+		return partition, fmt.Errorf("unknown partition entry `%s` in `%s`", k, str)
+	}
+
+	return partition, nil
 }
 
-func main() {
-	configPath := flag.String("config", "mkimg.toml", "mkimg configuration")
-	flag.Parse()
+func createDisk(context context.Context, cmd *cli.Command) error {
+	// Read configuration
+	name := cmd.String("name")
 
-	data, err := os.ReadFile(*configPath)
-	if err != nil {
-		panic(err)
-	}
-
-	config, err := toml.Load(string(data))
-	if err != nil {
-		panic(err)
-	}
-
-	cfgName := "out.img"
-	if config.Has("name") {
-		cfgName = config.Get("name").(string)
-	}
-
-	var cfgFirstSector uint64 = 2048
-	if config.Has("first-sector") {
-		cfgFirstSector = uint64(config.Get("first-sector").(int64))
-	}
-
-	cfgBootsector := ""
-	if config.Has("bootsector") {
-		cfgBootsector = config.Get("bootsector").(string)
-	}
-
-	// Remove the image
-	if err := os.Remove(cfgName); err != nil && !os.IsNotExist(err) {
-		panic(err)
-	}
-
-	// Parse config for partitions
-	cfgPartitions := config.GetArray("partitions").([]*toml.Tree)
-	if cfgPartitions == nil {
-		panic("no partitions")
-	}
-
-	var size uint64 = 512 * cfgFirstSector * 2
+	// Read partitions
+	firstSector := uint64(cmd.Uint("first-sector"))
+	size := 512 * firstSector * 2
 	partitions := make([]Partition, 0)
-	for i, cfgPartition := range cfgPartitions {
-		partition := cfgParsePartition(i+1, cfgPartition)
+	for _, partitionStr := range cmd.StringSlice("partition") {
+		partition, err := parsePartition(partitionStr)
+		if err != nil {
+			return err
+		}
+
 		size += (partition.size + 512 - 1) / 512 * 512
 		partitions = append(partitions, partition)
 	}
 
-	// Create the image
-	fmt.Printf("Creating image %s\n", cfgName)
-	img, err := diskfs.Create(cfgName, int64(size), diskfs.Raw, diskfs.SectorSize512)
+	// Create disk image
+	fmt.Printf("Creating image %s\n", name)
+	img, err := diskfs.Create(name, int64(size), diskfs.SectorSize512)
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("failed to create the image: %s", err)
 	}
 
-	currentSector := cfgFirstSector
+	currentSector := firstSector
 	gptPartitions := make([]*gpt.Partition, 0)
 	for i, partition := range partitions {
 		sizeInSectors := uint64((int64(partition.size) + img.LogicalBlocksize - 1) / img.LogicalBlocksize)
@@ -184,15 +194,11 @@ func main() {
 	}
 
 	// Partition the image
-	protectiveMBR := false
-	if config.Has("protective-mbr") {
-		protectiveMBR = config.Get("protective-mbr").(bool)
-	}
 	if err := img.Partition(&gpt.Table{
 		Partitions:    gptPartitions,
-		ProtectiveMBR: protectiveMBR,
+		ProtectiveMBR: cmd.Bool("protective-mbr"),
 	}); err != nil {
-		panic(err)
+		return fmt.Errorf("failed to partition the image: %s", err)
 	}
 
 	// Fulfill the partitions
@@ -201,22 +207,22 @@ func main() {
 		case PartitionTypeFile:
 			file, err := os.Open(partition.file)
 			if err != nil {
-				panic(err)
+				return fmt.Errorf("failed to open `%s`: %s", partition.file, err)
 			}
 
 			img.WritePartitionContents(i+1, file)
 		case PartitionTypeFS:
 			fs, err := img.CreateFilesystem(disk.FilesystemSpec{Partition: i + 1, FSType: partition.fsType, VolumeLabel: partition.name})
 			if err != nil {
-				panic(err)
+				return fmt.Errorf("failed to create fs for partition `%s`: %s", partition.name, err)
 			}
 
-			var fsCopy func(srcPath string, isDir bool, destPath string)
-			fsCopy = func(srcPath string, isDir bool, destPath string) {
+			var fsCopy func(srcPath string, isDir bool, destPath string) error
+			fsCopy = func(srcPath string, isDir bool, destPath string) error {
 				if isDir {
 					files, err := os.ReadDir(srcPath)
 					if err != nil {
-						panic(err)
+						return err
 					}
 
 					for _, file := range files {
@@ -226,47 +232,115 @@ func main() {
 				} else {
 					fileData, err := os.ReadFile(srcPath)
 					if err != nil {
-						panic(err)
+						return err
 					}
 					file, err := fs.OpenFile(destPath, os.O_CREATE|os.O_RDWR)
 					if err != nil {
-						panic(err)
+						return err
 					}
 					if _, err := file.Write(fileData); err != nil {
-						panic(err)
+						return err
 					}
+				}
+				return nil
+			}
+
+			if partition.fsRoot != "" {
+				stat, err := os.Stat(partition.fsRoot)
+				if err != nil {
+					return fmt.Errorf("failed to stat fsroot `%s`: %s", partition.fsRoot, err)
+				}
+
+				if !stat.IsDir() {
+					return fmt.Errorf("fsroot for partition `%s` it not a directory", partition.name)
+				}
+
+				if err := fsCopy(partition.fsRoot, true, "/"); err != nil {
+					return fmt.Errorf("failed to fscopy fsroot: %s", err)
 				}
 			}
 
-			for _, file := range partition.files {
-				stat, err := os.Stat(file)
-				if err != nil {
-					panic(err)
+			if partition.fsFiles != nil {
+				for _, file := range partition.fsFiles {
+					stat, err := os.Stat(file)
+					if err != nil {
+						return fmt.Errorf("failed to stat file `%s`: %s", file, err)
+					}
+
+					destPath := stat.Name()
+					if err := fsCopy(file, stat.IsDir(), destPath); err != nil {
+						return fmt.Errorf("failed to fscopy `%s` to `%s`: %s", file, destPath, err)
+					}
 				}
-				destPath := "/"
-				if !stat.IsDir() {
-					destPath = path.Join(destPath, stat.Name())
-				}
-				fsCopy(file, stat.IsDir(), destPath)
 			}
 		}
 	}
 
 	// Write the bootsector
-	if cfgBootsector != "" {
-		bootsector, err := os.ReadFile(cfgBootsector)
+	bootsector := cmd.String("bootsector")
+	if bootsector != "" {
+		bootsector, err := os.ReadFile(bootsector)
 		if err != nil {
-			panic(err)
+			return fmt.Errorf("failed to read the bootsector `%s`: %s", bootsector, err)
 		}
 
 		bootsectorSize := int64(len(bootsector))
 		if bootsectorSize > MaxBootsectorSize {
-			panic(fmt.Errorf("bootsector exceeds maximum size of 440 bytes (%d bytes)", bootsectorSize))
+			return fmt.Errorf("bootsector exceeds maximum size of 440 bytes (%d bytes)", bootsectorSize)
 		}
-		if _, err = img.File.WriteAt(bootsector, 0); err != nil {
-			panic(err)
+
+		w, err := img.Backend.Writable()
+		if err != nil {
+			return fmt.Errorf("failed to open image for writing the bootsector: %s", err)
+		}
+
+		if _, err = w.WriteAt(bootsector, 0); err != nil {
+			return fmt.Errorf("failed to write the bootsector: %s", err)
 		}
 		fmt.Printf("> Bootsector { size: %d }\n", bootsectorSize)
 	}
+
 	fmt.Println("Done")
+	return nil
+}
+
+func main() {
+	cmd := &cli.Command{
+		Name:  "mkimg",
+		Usage: "make a disk image",
+		Flags: []cli.Flag{
+			&cli.StringSliceFlag{
+				Name:    "partition",
+				Aliases: []string{"p"},
+				Usage:   "partition",
+			},
+			&cli.StringFlag{
+				Name:    "name",
+				Aliases: []string{"o", "dest"},
+				Usage:   "path or name of destination image",
+				Value:   "mkimg.img",
+			},
+			&cli.UintFlag{
+				Name:  "first-sector",
+				Usage: "sector number of the first partition",
+				Value: 2048,
+			},
+			&cli.BoolFlag{
+				Name:    "protective-mbr",
+				Aliases: []string{"pmbr"},
+				Usage:   "whether to set a protective mbr or not",
+				Value:   false,
+			},
+			&cli.StringFlag{
+				Name:     "bootsector",
+				Usage:    "path to the bootsector to use",
+				Required: false,
+			},
+		},
+		Action: createDisk,
+	}
+
+	if err := cmd.Run(context.Background(), os.Args); err != nil {
+		panic(err)
+	}
 }
