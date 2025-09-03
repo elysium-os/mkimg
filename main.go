@@ -274,7 +274,6 @@ func createDisk(context context.Context, cmd *cli.Command) error {
 					return err
 				}
 
-				fmt.Println(path)
 				return fs.Mkdir(path)
 			}
 
