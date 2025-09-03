@@ -137,13 +137,13 @@ func parsePartition(str string) (Partition, error) {
 				partition.fsRoot = v
 			case "fs-files":
 				partition.fsFiles = make(map[string]string, 0)
-				for _, file := range strings.Split(v, "#") {
+				for file := range strings.SplitSeq(v, "#") {
 					parts := strings.Split(file, "@")
 					if len(parts) == 2 {
 						partition.fsFiles[parts[0]] = parts[1]
 						continue
 					}
-					partition.fsFiles[parts[0]] = parts[0]
+					partition.fsFiles[parts[0]] = ""
 				}
 			default:
 				continue
@@ -293,7 +293,11 @@ func createDisk(context context.Context, cmd *cli.Command) error {
 						return fmt.Errorf("failed to stat file `%s`: %s", from, err)
 					}
 
-					fsCreateSkeleton(filepath.Dir(to))
+					if to == "" {
+						to = stat.Name()
+					} else {
+						fsCreateSkeleton(filepath.Dir(to))
+					}
 
 					if err := fsCopy(from, to, stat.IsDir()); err != nil {
 						return fmt.Errorf("failed to fsCopy `%s` to `%s`: %s", from, to, err)
