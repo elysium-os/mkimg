@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -35,8 +36,8 @@ type Partition struct {
 
 	// FS Partition
 	fsType  filesystem.Type
-	fsFiles []string
 	fsRoot  string
+	fsFiles map[string]string
 }
 
 // mkimg --partition=fs:name=xdd:type=fat32:size=32mb
@@ -132,10 +133,18 @@ func parsePartition(str string) (Partition, error) {
 					return partition, fmt.Errorf("fs-size `%s` is not a valid number (partition `%s`)", v, str)
 				}
 				partition.size = uint64(size) * 1024 * 1024
-			case "fs-files":
-				partition.fsFiles = strings.Split(v, "#")
 			case "fs-root":
 				partition.fsRoot = v
+			case "fs-files":
+				partition.fsFiles = make(map[string]string, 0)
+				for _, file := range strings.Split(v, "#") {
+					parts := strings.Split(file, "@")
+					if len(parts) == 2 {
+						partition.fsFiles[parts[0]] = parts[1]
+						continue
+					}
+					partition.fsFiles[parts[0]] = parts[0]
+				}
 			default:
 				continue
 			}
@@ -217,32 +226,49 @@ func createDisk(context context.Context, cmd *cli.Command) error {
 				return fmt.Errorf("failed to create fs for partition `%s`: %s", partition.name, err)
 			}
 
-			var fsCopy func(srcPath string, isDir bool, destPath string) error
-			fsCopy = func(srcPath string, isDir bool, destPath string) error {
+			var fsCopy func(from string, to string, isDir bool) error
+			fsCopy = func(from string, to string, isDir bool) error {
 				if isDir {
-					files, err := os.ReadDir(srcPath)
+					files, err := os.ReadDir(from)
 					if err != nil {
 						return err
 					}
 
+					fs.Mkdir(from)
+
 					for _, file := range files {
-						fs.Mkdir(destPath)
-						fsCopy(path.Join(srcPath, file.Name()), file.IsDir(), path.Join(destPath, file.Name()))
+						fsCopy(path.Join(from, file.Name()), path.Join(to, file.Name()), file.IsDir())
 					}
-				} else {
-					fileData, err := os.ReadFile(srcPath)
-					if err != nil {
-						return err
-					}
-					file, err := fs.OpenFile(destPath, os.O_CREATE|os.O_RDWR)
-					if err != nil {
-						return err
-					}
-					if _, err := file.Write(fileData); err != nil {
+					return nil
+				}
+
+				fileData, err := os.ReadFile(from)
+				if err != nil {
+					return err
+				}
+
+				file, err := fs.OpenFile(to, os.O_CREATE|os.O_RDWR)
+				if err != nil {
+					return err
+				}
+
+				if _, err := file.Write(fileData); err != nil {
+					return err
+				}
+
+				return nil
+			}
+
+			var fsCreateSkeleton func(path string) error
+			fsCreateSkeleton = func(path string) error {
+				dir := filepath.Dir(path)
+				if dir != "." {
+					if err := fsCreateSkeleton(dir); err != nil {
 						return err
 					}
 				}
-				return nil
+
+				return fs.Mkdir(dir)
 			}
 
 			if partition.fsRoot != "" {
@@ -255,21 +281,22 @@ func createDisk(context context.Context, cmd *cli.Command) error {
 					return fmt.Errorf("fsroot for partition `%s` it not a directory", partition.name)
 				}
 
-				if err := fsCopy(partition.fsRoot, true, "/"); err != nil {
-					return fmt.Errorf("failed to fscopy fsroot: %s", err)
+				if err := fsCopy(partition.fsRoot, "/", true); err != nil {
+					return fmt.Errorf("failed to fsCopy fsroot: %s", err)
 				}
 			}
 
 			if partition.fsFiles != nil {
-				for _, file := range partition.fsFiles {
-					stat, err := os.Stat(file)
+				for from, to := range partition.fsFiles {
+					stat, err := os.Stat(from)
 					if err != nil {
-						return fmt.Errorf("failed to stat file `%s`: %s", file, err)
+						return fmt.Errorf("failed to stat file `%s`: %s", from, err)
 					}
 
-					destPath := stat.Name()
-					if err := fsCopy(file, stat.IsDir(), destPath); err != nil {
-						return fmt.Errorf("failed to fscopy `%s` to `%s`: %s", file, destPath, err)
+					fsCreateSkeleton(filepath.Dir(to))
+
+					if err := fsCopy(from, to, stat.IsDir()); err != nil {
+						return fmt.Errorf("failed to fsCopy `%s` to `%s`: %s", from, to, err)
 					}
 				}
 			}
