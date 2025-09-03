@@ -234,11 +234,16 @@ func createDisk(context context.Context, cmd *cli.Command) error {
 						return err
 					}
 
-					fs.Mkdir(from)
+					if err := fs.Mkdir(from); err != nil {
+						return err
+					}
 
 					for _, file := range files {
-						fsCopy(path.Join(from, file.Name()), path.Join(to, file.Name()), file.IsDir())
+						if err := fsCopy(path.Join(from, file.Name()), path.Join(to, file.Name()), file.IsDir()); err != nil {
+							return err
+						}
 					}
+
 					return nil
 				}
 
@@ -261,14 +266,16 @@ func createDisk(context context.Context, cmd *cli.Command) error {
 
 			var fsCreateSkeleton func(path string) error
 			fsCreateSkeleton = func(path string) error {
-				dir := filepath.Dir(path)
-				if dir != "." {
-					if err := fsCreateSkeleton(dir); err != nil {
-						return err
-					}
+				if path == "/" || path == "." {
+					return nil
 				}
 
-				return fs.Mkdir(dir)
+				if err := fsCreateSkeleton(filepath.Dir(path)); err != nil {
+					return err
+				}
+
+				fmt.Println(path)
+				return fs.Mkdir(path)
 			}
 
 			if partition.fsRoot != "" {
@@ -298,6 +305,7 @@ func createDisk(context context.Context, cmd *cli.Command) error {
 					} else {
 						fsCreateSkeleton(filepath.Dir(to))
 					}
+					to = path.Join("/", to)
 
 					if err := fsCopy(from, to, stat.IsDir()); err != nil {
 						return fmt.Errorf("failed to fsCopy `%s` to `%s`: %s", from, to, err)
