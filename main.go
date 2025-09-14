@@ -40,8 +40,6 @@ type Partition struct {
 	fsFiles map[string]string
 }
 
-// mkimg --partition=fs:name=xdd:type=fat32:size=32mb
-
 func parsePartitionKV(str string) (map[string]string, error) {
 	kv := make(map[string]string, 0)
 
