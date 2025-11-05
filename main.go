@@ -236,7 +236,7 @@ func createDisk(context context.Context, cmd *cli.Command) error {
 						return err
 					}
 
-					if err := fs.Mkdir(from); err != nil {
+					if err := fs.Mkdir(to); err != nil {
 						return err
 					}
 
