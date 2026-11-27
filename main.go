@@ -191,17 +191,18 @@ func createDisk(context context.Context, cmd *cli.Command) error {
 	for i, partition := range partitions {
 		sizeInSectors := uint64((int64(partition.size) + img.LogicalBlocksize - 1) / img.LogicalBlocksize)
 		gptPartition := gpt.Partition{
-			Start: currentSector,
-			End:   currentSector + sizeInSectors,
-			Type:  gpt.Type(partition.gptType),
-			Name:  partition.name,
+		    Start: currentSector,
+		    End:   currentSector + sizeInSectors - 1,
+		    Type:  gpt.Type(partition.gptType),
+		    Name:  partition.name,
 		}
 		if partition.gptUUID != "" {
 			gptPartition.GUID = partition.gptUUID
 		}
 		gptPartitions = append(gptPartitions, &gptPartition)
-		fmt.Printf("> Partition %d { name: %s, type: %s, start: %d, end: %d, GUID: %s }\n", i+1, partition.name, partition.ptype, currentSector, currentSector+sizeInSectors, partition.gptUUID)
-		currentSector += sizeInSectors
+		fmt.Printf("> Partition %d { name: %s, type: %s, start: %d, end: %d, GUID: %s }\n", i+1, partition.name, partition.ptype, gptPartition.Start, gptPartition.End, partition.gptUUID)
+
+		currentSector = gptPartition.End + 1
 	}
 
 	// Partition the image
